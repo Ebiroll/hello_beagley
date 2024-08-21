@@ -98,3 +98,8 @@ make -s -C j722s-evm/c75ss1-0_freertos/ti-c7000
 - Ensure all tools and dependencies are correctly installed.
 - Consult the documentation provided with the tools for troubleshooting.
 - Adjust paths and filenames based on your actual installation and versions.
+
+  ## 6. Deploy on BeagleY-AI board
+
+  This is described in this article.
+  https://medium.com/@olof-astrand/hello-world-on-the-c7x-dsp-coprocessor-with-the-beagley-ai-c18d646c8655
