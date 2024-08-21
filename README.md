@@ -90,3 +90,11 @@ cd hello_beagley
 Build the project using the following make commands:
 
 ```sh
+make -s -C j722s-evm/main-r5fss0-0_freertos/ti-arm-clang
+make -s -C j722s-evm/c75ss0-0_freertos/ti-c7000
+make -s -C j722s-evm/c75ss1-0_freertos/ti-c7000
+```
+
+- Ensure all tools and dependencies are correctly installed.
+- Consult the documentation provided with the tools for troubleshooting.
+- Adjust paths and filenames based on your actual installation and versions.
