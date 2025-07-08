@@ -1,0 +1,303 @@
+# Simple Makefile for C7x DSP Audio Processor Firmware
+# For BeagleY-AI AM67A C7x DSP cores using remoteproc
+
+# TI C7x Compiler (adjust path as needed)
+# You can also use GCC cross-compiler if available
+CC = cl7x
+OBJCOPY = objcopy
+STRIP = strip
+
+# If TI compiler not available, try GCC cross-compiler
+# CC = aarch64-linux-gnu-gcc
+# OBJCOPY = aarch64-linux-gnu-objcopy
+
+# Target firmware
+TARGET = c7x_audio_processor
+TARGET_OUT = $(TARGET).out
+TARGET_ELF = $(TARGET).elf
+TARGET_BIN = $(TARGET).bin
+
+# Source files
+SOURCES = c7x_audio_processor.c rsc_table.c
+
+# Object files
+OBJECTS = $(SOURCES:.c=.o)
+
+# Include directories (adjust paths based on your setup)
+INCLUDES = -I. \
+          -I/usr/include \
+          -I/opt/ti/pru-software-support-package/include \
+          -I/opt/ti/pru-software-support-package/include/am335x
+
+# Compiler flags for C7x or fallback to ARM
+ifdef TI_C7X_COMPILER
+    # TI C7x specific flags
+    CFLAGS = -mv7504 \
+             --abi=eabi \
+             -O2 \
+             --opt_for_speed=2 \
+             --fp_mode=relaxed \
+             -g \
+             --display_error_number \
+             -D__TI_COMPILER_VERSION__ \
+             -DSOC_AM67A \
+             -DC7X_CORE \
+             $(INCLUDES)
+             
+    LDFLAGS = -mv7504 \
+              --abi=eabi \
+              -g \
+              --display_error_number \
+              --warn_sections \
+              --rom_model \
+              -o $(TARGET_OUT) \
+              -m $(TARGET).map
+else
+    # Use GCC as fallback (will need modification for actual C7x deployment)
+    CC = gcc
+    CFLAGS = -Wall -Wextra -O2 -g \
+             -fno-builtin \
+             -nostdlib \
+             -DGCC_COMPILER \
+             -DSOC_AM67A \
+             -DC7X_CORE \
+             $(INCLUDES)
+             
+    LDFLAGS = -nostdlib -static
+endif
+
+# Linker script (simple version)
+LINKER_SCRIPT = c7x_simple.lds
+
+# Build rules
+.PHONY: all clean install help setup
+
+all: $(TARGET_OUT)
+
+# Create simple linker script
+$(LINKER_SCRIPT):
+	@echo "Creating simple linker script..."
+	@cat > $(LINKER_SCRIPT) << 'EOF'
+MEMORY
+{
+    /* Based on BeagleY-AI device tree memory regions */
+    C7X_0_MEMORY : ORIGIN = 0xa3100000, LENGTH = 0xf00000  /* 15MB */
+    C7X_1_MEMORY : ORIGIN = 0xa4100000, LENGTH = 0xf00000  /* 15MB */
+    SHARED_MEM   : ORIGIN = 0xa5000000, LENGTH = 0x1c00000 /* 28MB IPC */
+}
+
+SECTIONS
+{
+    .text : {
+        *(.text)
+        *(.text.*)
+    } > C7X_0_MEMORY
+
+    .data : {
+        *(.data)
+        *(.data.*)
+    } > C7X_0_MEMORY
+
+    .bss : {
+        *(.bss)
+        *(.bss.*)
+    } > C7X_0_MEMORY
+
+    .resource_table : {
+        *(.resource_table)
+    } > C7X_0_MEMORY
+
+    .rodata : {
+        *(.rodata)
+        *(.rodata.*)
+    } > C7X_0_MEMORY
+}
+EOF
+
+# Compile C source files
+%.o: %.c
+	@echo "Compiling $<..."
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Link the final executable
+$(TARGET_OUT): $(OBJECTS) $(LINKER_SCRIPT)
+	@echo "Linking $(TARGET_OUT)..."
+ifdef TI_C7X_COMPILER
+	$(CC) $(LDFLAGS) -l$(LINKER_SCRIPT) $(OBJECTS)
+else
+	$(CC) $(LDFLAGS) -T $(LINKER_SCRIPT) $(OBJECTS) -o $(TARGET_OUT)
+endif
+	@echo "Build complete: $(TARGET_OUT)"
+
+# Convert to binary format if needed
+$(TARGET_BIN): $(TARGET_OUT)
+	@echo "Creating binary image..."
+	$(OBJCOPY) -O binary $(TARGET_OUT) $(TARGET_BIN)
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning build artifacts..."
+	rm -f $(OBJECTS) $(TARGET_OUT) $(TARGET_ELF) $(TARGET_BIN)
+	rm -f $(TARGET).map $(LINKER_SCRIPT)
+	rm -f *.d
+
+# Install firmware to BeagleY-AI
+install: $(TARGET_OUT)
+	@echo "Installing firmware to BeagleY-AI..."
+	@if [ ! -f $(TARGET_OUT) ]; then \
+		echo "Error: $(TARGET_OUT) not found. Run 'make' first."; \
+		exit 1; \
+	fi
+	
+	@echo "Stopping DSP cores..."
+	-sudo sh -c 'echo stop > /sys/class/remoteproc/remoteproc0/state' 2>/dev/null || true
+	-sudo sh -c 'echo stop > /sys/class/remoteproc/remoteproc1/state' 2>/dev/null || true
+	
+	@echo "Installing firmware..."
+	sudo cp $(TARGET_OUT) /lib/firmware/j722s-c71_0-fw
+	sudo cp $(TARGET_OUT) /lib/firmware/j722s-c71_1-fw
+	
+	@echo "Starting DSP cores..."
+	sudo sh -c 'echo start > /sys/class/remoteproc/remoteproc0/state'
+	sudo sh -c 'echo start > /sys/class/remoteproc/remoteproc1/state'
+	
+	@echo "Installation complete"
+
+# Quick development cycle - build and install
+deploy: clean all install
+
+# Check DSP status
+status:
+	@echo "=== DSP Core Status ==="
+	@echo -n "Core 0: "; cat /sys/class/remoteproc/remoteproc0/state 2>/dev/null || echo "N/A"
+	@echo -n "Core 1: "; cat /sys/class/remoteproc/remoteproc1/state 2>/dev/null || echo "N/A"
+	@echo
+	@echo "=== RPMsg Devices ==="
+	@ls -la /dev/rpmsg* 2>/dev/null || echo "No RPMsg devices found"
+	@echo
+	@echo "=== Memory Regions (from dmesg) ==="
+	@dmesg | grep -E "(c7x|dsp|remoteproc)" | tail -10 || echo "No recent DSP messages"
+
+# Setup development environment
+setup:
+	@echo "=== BeagleY-AI C7x Development Setup ==="
+	@echo "Checking system configuration..."
+	
+	@echo "1. Checking remoteproc support..."
+	@if [ -d "/sys/class/remoteproc" ]; then \
+		echo "   ✓ Remoteproc support available"; \
+	else \
+		echo "   ✗ Remoteproc not found"; \
+	fi
+	
+	@echo "2. Checking RPMsg support..."
+	@if lsmod | grep -q rpmsg; then \
+		echo "   ✓ RPMsg modules loaded"; \
+	else \
+		echo "   ✗ RPMsg modules not loaded"; \
+	fi
+	
+	@echo "3. Checking compiler availability..."
+	@if which cl7x >/dev/null 2>&1; then \
+		echo "   ✓ TI C7x compiler found"; \
+		export TI_C7X_COMPILER=1; \
+	elif which gcc >/dev/null 2>&1; then \
+		echo "   ⚠ Using GCC (may need modifications for C7x)"; \
+	else \
+		echo "   ✗ No suitable compiler found"; \
+	fi
+	
+	@echo "4. Checking memory regions..."
+	@if dmesg | grep -q "c7x.*memory"; then \
+		echo "   ✓ C7x memory regions detected"; \
+	else \
+		echo "   ⚠ C7x memory regions not clearly visible in dmesg"; \
+	fi
+	
+	@echo
+	@echo "=== Build Instructions ==="
+	@echo "1. Run 'make' to build the firmware"
+	@echo "2. Run 'make install' to deploy to DSP cores"
+	@echo "3. Run 'make status' to check DSP status"
+	@echo "4. Build the Linux application separately"
+	@echo
+	@echo "=== Notes ==="
+	@echo "- This build system works with basic GCC"
+	@echo "- For optimal C7x performance, use TI C7000 compiler"
+	@echo "- The firmware uses remoteproc resource table for loading"
+	@echo "- Shared memory is mapped to IPC region at 0xa5000000"
+
+# Simple test - check if we can communicate with DSP
+test: install
+	@echo "Testing DSP communication..."
+	@sleep 2
+	@if [ -c "/dev/rpmsg_ctrl0" ]; then \
+		echo "✓ RPMsg control device available"; \
+	else \
+		echo "✗ No RPMsg control device"; \
+	fi
+	@echo "Check 'dmesg | tail -20' for DSP boot messages"
+
+# Help target
+help:
+	@echo "Available targets:"
+	@echo "  all      - Build the DSP firmware (default)"
+	@echo "  clean    - Remove build artifacts"
+	@echo "  install  - Build and deploy firmware to DSP cores"
+	@echo "  deploy   - Clean, build, and install in one step"
+	@echo "  status   - Check DSP core and system status"
+	@echo "  setup    - Check development environment"
+	@echo "  test     - Build, install and test basic communication"
+	@echo "  help     - Show this help message"
+	@echo ""
+	@echo "Environment variables:"
+	@echo "  TI_C7X_COMPILER=1  - Use TI C7x compiler (if available)"
+
+# Create README
+readme:
+	@cat > README_C7X.md << 'EOF'
+# C7x DSP Audio Processor for BeagleY-AI
+
+This firmware runs on the C7x DSP cores of the BeagleY-AI (AM67A) and processes audio chunks received via RPMsg from the Linux userspace application.
+
+## Memory Layout
+
+Based on the BeagleY-AI device tree:
+- C7x_0 DMA Memory: 0xa3000000 (1MB)
+- C7x_0 Memory: 0xa3100000 (15MB)  
+- C7x_1 DMA Memory: 0xa4000000 (1MB)
+- C7x_1 Memory: 0xa4100000 (15MB)
+- Shared IPC Memory: 0xa5000000 (28MB)
+
+The audio circular buffer is located at offset 0x1000000 within the IPC memory region.
+
+## Build Process
+
+1. `make setup` - Check environment
+2. `make` - Build firmware
+3. `make install` - Deploy to DSP cores
+4. `make status` - Check if DSP cores are running
+
+## Audio Processing
+
+The firmware performs:
+1. Low-pass filtering using IIR filter
+2. Audio amplification (1.2x gain)
+3. 16-bit to float conversion and back
+4. Statistics tracking
+
+## Communication
+
+Uses RPMsg with Linux userspace via:
+- Channel: "rpmsg-audio"
+- Message types: INIT, PROCESS_CHUNK, CHUNK_COMPLETE, STATUS
+- Shared memory for audio data exchange
+
+## Requirements
+
+- BeagleY-AI with Linux 6.1.73+
+- Remoteproc and RPMsg support
+- GCC or TI C7000 compiler
+- Root access for firmware installation
+EOF
+	@echo "Created README_C7X.md"
